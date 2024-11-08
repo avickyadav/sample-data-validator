@@ -1,314 +1,294 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upload Home</title>
-    <link rel="stylesheet" href="/static/styles.css">
-    <style>
-        /* Modal styles */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            overflow: auto;
-            background-color: rgb(0,0,0);
-            background-color: rgba(0,0,0,0.4);
-            padding-top: 60px;
-        }
-        .modal-content {
-            background-color: #fefefe;
-            margin: 5% auto;
-            padding: 20px;
-            border: 1px solid #888;
-            width: 80%;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-        }
-        .close {
-            color: #aaa;
-            float: right;
-            font-size: 28px;
-            font-weight: bold;
-        }
-        .close:hover,
-        .close:focus {
-            color: black;
-            text-decoration: none;
-            cursor: pointer;
-        }
-        .error { color: red; }
-        .success { color: green; }
-        .snackbar {
-            visibility: hidden;
-            min-width: 250px;
-            background-color: #4CAF50; /* Success green background */
-            color: #fff;
-            text-align: left;
-            border-radius: 8px;
-            padding: 16px;
-            position: fixed;
-            z-index: 1;
-            bottom: 20px;
-            left: 20px;
-            font-size: 16px;
-            display: flex;
-            align-items: center;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
+import math
+from datetime import datetime
+from fastapi.responses import HTMLResponse
+from datetime import timedelta
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Cookie, UploadFile, File, Query
+from fastapi.responses import RedirectResponse, JSONResponse, Response
+import httpx
+import os
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import jwt
+from jwt import PyJWTError
+import requests
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session, aliased
 
-        .snackbar.show {
-            visibility: visible;
-            -webkit-animation: fadein 0.5s, fadeout 0.5s 3s;
-            animation: fadein 0.5s, fadeout 0.5s 3s;
-        }
+from typing import List, Dict
 
-        .snackbar-icon {
-            margin-right: 10px;
-            font-size: 20px;
-        }
+from database import get_db
+from models import FileUpload
+from schema import FileUploadSchema
 
-        @-webkit-keyframes fadein {
-            from {bottom: 0; opacity: 0;}
-            to {bottom: 20px; opacity: 1;}
-        }
+load_dotenv()
 
-        @keyframes fadein {
-            from {bottom: 0; opacity: 0;}
-            to {bottom: 20px; opacity: 1;}
-        }
+app = FastAPI()
 
-        @-webkit-keyframes fadeout {
-            from {bottom: 20px; opacity: 1;}
-            to {bottom: 0; opacity: 0;}
-        }
+# Configuration
+client_id = os.getenv("AZURE_CLIENT_ID")
+client_secret = os.getenv("AZURE_CLIENT_SECRET")
+tenant_id = os.getenv("AZURE_TENANT_ID")
+redirect_uri = os.getenv("REDIRECT_URI")
+scopes = ["openid", "profile", "email"]
+issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
 
-        @keyframes fadeout {
-            from {bottom: 20px; opacity: 1;}
-            to {bottom: 0; opacity: 0;}
-        }
+print(f'THIS IS REDIRECT {redirect_uri}')
 
-        .tab {
-            display: inline-block;
-            padding: 10px 20px;
-            cursor: pointer;
-            border: 1px solid #ccc;
-            border-bottom: none;
-            background-color: #f1f1f1;
-        }
-
-        .tab.active {
-            background-color: #ffffff;
-            border-bottom: 1px solid white;
-            font-weight: bold;
-        }
-
-        .tab-content {
-            border: 1px solid #ccc;
-            padding: 20px;
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
-        }
-        .pagination {
-            margin-top: 20px;
-            text-align: center;
-        }
-        .pagination a {
-            margin: 0 5px;
-            padding: 8px 16px;
-            text-decoration: none;
-            background-color: #f1f1f1;
-            border: 1px solid #ccc;
-            color: #333;
-        }
-        .pagination a.active {
-            font-weight: bold;
-            background-color: #4CAF50;
-            color: white;
-        }
-
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>File Uploads</h1>
-        <div class="tabs">
-            <div id="upload-tab" class="tab active" onclick="openTab('upload')">Upload</div>
-            <div id="history-tab" class="tab" onclick="openTab('history')">Previous History</div>
-            <div id="upload-config-tab" class="tab" onclick="openTab('upload-config')">Update Configurations</div>
-        </div>
-        <div id="upload-content" class="tab-content active">
-        <div class="upload-container">
-            <h2>Upload New File</h2>
-            {% if error %}
-                <p class="error">{{ error }}</p>
-            {% elif message %}
-                <p class="success">{{ message }}</p>
-            {% endif %}
-            <form action="/upload/" method="post" enctype="multipart/form-data" class="upload-form">
-                <input type="file" name="file" required>
-                <button type="submit" class="upload-button">Upload</button>
-            </form>
-        </div>
-
-            </div>
-        <div id="history-content" class="tab-content">
-        <h2>Previous Uploads</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>CRM ID</th>
-                    <th>Upload Owner</th>
-                    <th>Upload Date</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for upload in uploads %}
-                <tr>
-                    <td><a href="#" class="crm-link" data-crm-id="{{ upload.crm_id }}">{{ upload.crm_id }}</a></td>
-                    <td>{{ upload.owner }}</td>
-                    <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                    <td>{{ upload.status }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-            <div class="pagination">
-                {% for p in range(1, total_pages + 1) %}
-    <a href="/?page={{ p }}" class="{{ 'active' if p == page else '' }}">{{ p }}</a>
-{% endfor %}
-
-{% if page < total_pages %}
-    <a href="/?page={{ page + 1 }}">Next &raquo;</a>
-{% endif %}
-            </div>
-            </div>
-
-        <div id="upload-config-content" class="tab-content">
-        <div class="upload-container">
-            <h2>Upload Configurations File</h2>
-            {% if error %}
-                <p class="error">{{ error }}</p>
-            {% elif message %}
-                <p class="success">{{ message }}</p>
-            {% endif %}
-            <form action="/upload-configs/" method="post" enctype="multipart/form-data" class="upload-form">
-                <input type="file" name="file" required>
-                <button type="submit" class="upload-button">Upload</button>
-            </form>
-        </div>
-
-            </div>
+# Mount static files (optional)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-            </div>
+# Set up Jinja2 templates
+templates = Jinja2Templates(directory="templates")
+
+uploads = [
+    {
+        "crm_id": "CRM001",
+        "owner": "Alice",
+        "upload_date": datetime(2024, 10, 20),
+        "status": "Completed",
+        "error": None,
+    },
+    {
+        "crm_id": "CRM001",
+        "owner": "Alice",
+        "upload_date": datetime(2024, 10, 21),
+        "status": "Failed",
+        "error": "File format not supported",
+    },
+    {
+        "crm_id": "CRM002",
+        "owner": "Bob",
+        "upload_date": datetime(2024, 10, 22),
+        "status": "In Progress",
+        "error": None,
+    },
+    {
+        "crm_id": "CRM002",
+        "owner": "Bob",
+        "upload_date": datetime(2024, 10, 23),
+        "status": "Completed",
+        "error": None,
+    },
+    {
+        "crm_id": "CRM003",
+        "owner": "Charlie",
+        "upload_date": datetime(2024, 10, 24),
+        "status": "Failed",
+        "error": "File too large",
+    },
+    {
+        "crm_id": "CRM003",
+        "owner": "Charlie",
+        "upload_date": datetime(2024, 10, 25),
+        "status": "Completed",
+        "error": None,
+    },
+    {
+        "crm_id": "CRM001",
+        "owner": "Alice",
+        "upload_date": datetime(2024, 10, 26),
+        "status": "In Progress",
+        "error": None,
+    },
+    {
+        "crm_id": "CRM004",
+        "owner": "David",
+        "upload_date": datetime(2024, 10, 27),
+        "status": "Completed",
+        "error": None,
+    },
+    {
+        "crm_id": "CRM005",
+        "owner": "Eve",
+        "upload_date": datetime(2024, 10, 28),
+        "status": "Failed",
+        "error": "Unauthorized access",
+    },
+    {
+        "crm_id": "CRM005",
+        "owner": "Eve",
+        "upload_date": datetime(2024, 10, 29),
+        "status": "Completed",
+        "error": None,
+    },
+]
 
 
-    <!-- Modal -->
-    <div id="myModal" class="modal">
-        <div class="modal-content">
-            <span class="close">&times;</span>
-            <h2>Upload History</h2>
-            <table id="history-table">
-                <thead>
-                    <tr>
-                        <th>Upload Date</th>
-                        <th>Status</th>
-                        <th>Owner</th>
-                        <th>Error Message</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <!-- History records will be inserted here -->
-                </tbody>
-            </table>
-
-        </div>
-    </div>
-
-    {% if message %}
-    <div id="snackbar" class="snackbar">
-        <span class="snackbar-icon">✔️</span> <!-- Success icon -->
-        <span id="snackbar-message">{{ message }}</span>
-    </div>
-    {% endif %}
+# @app.get("/", response_class=HTMLResponse)
+# async def read_upload_home(request: Request):
+#     return templates.TemplateResponse("upload_home.html", {"request": request, "uploads": uploads})
 
 
+async def validate_token(token: str):
+    unverified_header = jwt.get_unverified_header(token)
+    rsa_key = {}
 
-    <script>
-        const modal = document.getElementById("myModal");
-        const span = document.getElementsByClassName("close")[0];
+    if 'kid' not in unverified_header:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid header")
 
-        document.querySelectorAll('.crm-link').forEach(link => {
-            link.onclick = async function(event) {
-                event.preventDefault();
-                const crmId = this.getAttribute("data-crm-id");
-                const response = await fetch(`/upload_history/${crmId}`);
-                const history = await response.json();
+    async with httpx.AsyncClient() as client:
+        keys_url = f"https://login.microsoftonline.com/common/discovery/v2.0/keys"
+        keys_response = await client.get(keys_url)
+        keys = keys_response.json().get('keys')
 
-                const tbody = document.getElementById("history-table").getElementsByTagName("tbody")[0];
-                tbody.innerHTML = ""; // Clear previous data
-
-                history.forEach(upload => {
-                    const row = tbody.insertRow();
-                    row.insertCell(0).innerText = new Date(upload.upload_date).toLocaleDateString();
-                    row.insertCell(1).innerText = upload.status;
-                    row.insertCell(2).innerText = upload.owner;
-                    row.insertCell(3).innerText = upload.error ? upload.error : "None";
-                });
-
-                modal.style.display = "block";
-            };
-        });
-
-        span.onclick = function() {
-            modal.style.display = "none";
-        };
-
-        window.onclick = function(event) {
-            if (event.target === modal) {
-                modal.style.display = "none";
+    for key in keys:
+        if key['kid'] == unverified_header['kid']:
+            rsa_key = {
+                "kty": key['kty'],
+                "n": key['n'],
+                "e": key['e']
             }
-        };
+    print(f'Yahaaa tk aake gya {rsa_key}')
+    if rsa_key:
+        # payload = jwt.decode(
+        #     token,
+        #     options=
+        # )
+        payload = jwt.decode(token, options={"verify_signature": False})
+        return payload
+    # decoded_token = jwt.decode(token, algorithms=['RS256'], verify=False)
+    # print(f"ye kara samaaan {decoded_token}")
 
 
-        window.onload = function() {
-            const message = "{{message}}"
-            const snackbar = document.getElementById("snackbar");
-            console.log("This is message", message)
-            if (message !== "") {
-                snackbar.classList.add("show");
-                setTimeout(() => snackbar.classList.remove("show"), 3000);
-            }
-        }
-        function openTab(tabName) {
-            // Remove active class from all tabs and contents
-            document.querySelectorAll('.tab, .tab-content').forEach(element => {
-                element.classList.remove('active');
-            });
+async def get_current_user(request: Request):
+    print(f'this is headers {request.headers}')
+    # Extract token from Authorization header
+    authorization: str = request.headers.get("Authorization")
+    if not authorization:
+        return None
 
-            // Add active class to selected tab and content
-            document.getElementById(tabName + '-tab').classList.add('active');
-            document.getElementById(tabName + '-content').classList.add('active');
-        }
-        const urlParams = new URLSearchParams(window.location.search);
-            const page = urlParams.get('page'); // Get the `page` query parameter
+    token = authorization.split(" ")[1] if " " in authorization else authorization
+    user = await validate_token(token)
+    return user
 
-            if (page) {
-                // If there's a page parameter in the URL, activate the 'history' tab
-                openTab('history');
-            } else {
-                // If there's no page parameter, activate the 'upload' tab by default
-                openTab('upload');
-            }
-    </script>
-</body>
-</html>
+
+# @app.get("/")
+# async def read_root(current_user: dict = Depends(get_current_user)):
+#     if current_user is None:
+#         return RedirectResponse(url="/login")  # Redirect if not authenticated
+#     return {"message": f"Welcome, {current_user.get('name', 'User')}!"}
+
+
+@app.get("/login")
+async def login():
+    return RedirectResponse(
+        url=f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri={redirect_uri}&response_mode=query&scope={' '.join(scopes)}")
+
+
+@app.get("/auth/callback")
+async def auth_callback(code: str, responses: RedirectResponse, request: Request):
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    async with httpx.AsyncClient() as client:
+        response = await client.post(token_url, data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code"
+        })
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
+
+        tokens = response.json()
+        toke = await validate_token(tokens["access_token"])
+        if toke:
+            responses = RedirectResponse(url='/')
+            responses.set_cookie(key="user_token", value=tokens["access_token"])
+            return responses
+
+        print(f'this is token {toke}')
+        return {"access_token": tokens["access_token"], "id_token": tokens["id_token"]}
+
+
+# @app.get("/upload_history/{crm_id}", response_class=List[FileUploadSchema])
+# async def get_upload_history(crm_id: str, db: Session = Depends(get_db)):
+#     # Filter uploads by CRM ID
+#     history = list(db.query(FileUpload).filter(FileUpload.crm_id == crm_id).all())
+#     return history
+@app.get("/upload_history/{crm_id}", response_model=List[FileUploadSchema])  # Correctly specify the return type
+async def get_upload_by_crm_id(crm_id: str, db: Session = Depends(get_db)):
+    print(f'This is crm {crm_id}')
+    history = db.query(FileUpload).filter(FileUpload.crm_id == crm_id).all()
+    if not history:
+        raise HTTPException(status_code=404, detail="Records not found")
+    return history  # This will return a list of FileUploadSchema instances
+
+
+@app.get("/", response_class=HTMLResponse)
+async def protected_route(request: Request, user_token: str = Cookie(None), message: str = None,
+                          db: Session = Depends(get_db), page: int = Query(1, ge=1), limit: int = Query(5, ge=1)):
+    print(f'this is user token {user_token}')
+    if user_token is None:
+        return RedirectResponse(url="/login")  # Redirect if not authenticated
+    uploads_records_data, total_pages = await get_all_upload_records_from_db(db, limit, page)
+    print(f"This is page data {page} and {total_pages}")
+    return templates.TemplateResponse("upload_home.html",
+                                      {"request": request, "uploads": uploads_records_data,
+                                       "message": message,
+                                       "page": page,
+                                       "total_pages": total_pages})
+
+
+async def get_all_upload_records_from_db(db, limit=5, page=1):
+    total_records = db.query(FileUpload.crm_id).distinct().count()
+    total_pages = math.ceil(total_records / limit)  # Calculate total pages
+    # Fetch records for the current page
+    # upload_records = db.query(FileUpload).order_by(FileUpload.upload_date.desc()).offset((page - 1) * limit).limit(limit).all()
+    latest_uploads_subquery = (
+        db.query(
+            FileUpload.crm_id,
+            func.max(FileUpload.upload_date).label('latest_upload_date')
+        )
+        .group_by(FileUpload.crm_id)
+        .subquery()
+    )
+    FileUploadAlias = aliased(FileUpload)
+
+    upload_records = (
+        db.query(FileUpload)
+        .join(
+            latest_uploads_subquery,
+            (FileUpload.crm_id == latest_uploads_subquery.c.crm_id) &
+            (FileUpload.upload_date == latest_uploads_subquery.c.latest_upload_date)
+        )
+    )
+    upload_records = upload_records.order_by(FileUpload.upload_date.desc()).offset((page - 1) * limit).limit(
+        limit).all()
+
+    return upload_records, total_pages
+
+
+
+
+
+@app.post("/upload/", response_class=HTMLResponse)
+async def upload_file(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), user_token: str= Cookie(None)):
+    # Check the file content type to ensure it's an .xlsx file
+    if file.content_type != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        records, total_pages = await get_all_upload_records_from_db(db)
+        error_message = "Only .xlsx files are allowed."
+        return templates.TemplateResponse("upload_home.html", {
+            "request": request,
+            "uploads": records,
+            "error": error_message,
+            "page": 1,
+            "total_pages": total_pages
+        })
+    user_info = jwt.decode(user_token, options={"verify_signature": False})
+    new_upload = FileUpload(
+        crm_id=file.filename,  # or generate a unique ID
+        owner=user_info['name'],
+        status='Completed',
+        error=None,
+    )
+
+    db.add(new_upload)
+    db.commit()
+
+    return RedirectResponse(url="/?message=File uploaded successfully", status_code=303)
