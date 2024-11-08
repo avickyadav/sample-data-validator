@@ -142,6 +142,7 @@
         <div class="tabs">
             <div id="upload-tab" class="tab active" onclick="openTab('upload')">Upload</div>
             <div id="history-tab" class="tab" onclick="openTab('history')">Previous History</div>
+            <div id="upload-config-tab" class="tab" onclick="openTab('upload-config')">Update Configurations</div>
         </div>
         <div id="upload-content" class="tab-content active">
         <div class="upload-container">
@@ -156,6 +157,7 @@
                 <button type="submit" class="upload-button">Upload</button>
             </form>
         </div>
+
             </div>
         <div id="history-content" class="tab-content">
         <h2>Previous Uploads</h2>
@@ -189,7 +191,26 @@
 {% endif %}
             </div>
             </div>
-    </div>
+
+        <div id="upload-config-content" class="tab-content">
+        <div class="upload-container">
+            <h2>Upload Configurations File</h2>
+            {% if error %}
+                <p class="error">{{ error }}</p>
+            {% elif message %}
+                <p class="success">{{ message }}</p>
+            {% endif %}
+            <form action="/upload-configs/" method="post" enctype="multipart/form-data" class="upload-form">
+                <input type="file" name="file" required>
+                <button type="submit" class="upload-button">Upload</button>
+            </form>
+        </div>
+
+            </div>
+
+
+            </div>
+
 
     <!-- Modal -->
     <div id="myModal" class="modal">
@@ -201,6 +222,7 @@
                     <tr>
                         <th>Upload Date</th>
                         <th>Status</th>
+                        <th>Owner</th>
                         <th>Error Message</th>
                     </tr>
                 </thead>
@@ -239,7 +261,8 @@
                     const row = tbody.insertRow();
                     row.insertCell(0).innerText = new Date(upload.upload_date).toLocaleDateString();
                     row.insertCell(1).innerText = upload.status;
-                    row.insertCell(2).innerText = upload.error ? upload.error : "None";
+                    row.insertCell(2).innerText = upload.owner;
+                    row.insertCell(3).innerText = upload.error ? upload.error : "None";
                 });
 
                 modal.style.display = "block";
