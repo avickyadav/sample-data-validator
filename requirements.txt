@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+aiofiles
+python-dotenv
+jinja2
+httpx
+pyjwt
+cryptography
+requests
+pyodbc
+sqlalchemy
+urllib3
