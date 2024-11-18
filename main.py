@@ -1,9 +1,15 @@
+import io
 import math
-from datetime import datetime
+from datetime import datetime, timezone
+from urllib.parse import unquote
+import pytz
+
 from fastapi.responses import HTMLResponse
 from datetime import timedelta
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Cookie, UploadFile, File, Query
 from fastapi.responses import RedirectResponse, JSONResponse, Response
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, StreamingResponse
 import httpx
 import os
 from dotenv import load_dotenv
@@ -17,12 +23,17 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, aliased
+import pandas as pd
 
 from typing import List, Dict
 
+from constants.rialto_table_constants import rialto_table_necessary_columns
+from controllers.netsuite_controller import process_action
 from database import get_db
+from helper_file import DIRECTORY_NAME, upload_to_azure, download_from_azure
 from models import FileUpload
 from schema import FileUploadSchema
+from controllers import netsuite_controller
 
 load_dotenv()
 
@@ -41,82 +52,8 @@ print(f'THIS IS REDIRECT {redirect_uri}')
 # Mount static files (optional)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 # Set up Jinja2 templates
 templates = Jinja2Templates(directory="templates")
-
-uploads = [
-    {
-        "crm_id": "CRM001",
-        "owner": "Alice",
-        "upload_date": datetime(2024, 10, 20),
-        "status": "Completed",
-        "error": None,
-    },
-    {
-        "crm_id": "CRM001",
-        "owner": "Alice",
-        "upload_date": datetime(2024, 10, 21),
-        "status": "Failed",
-        "error": "File format not supported",
-    },
-    {
-        "crm_id": "CRM002",
-        "owner": "Bob",
-        "upload_date": datetime(2024, 10, 22),
-        "status": "In Progress",
-        "error": None,
-    },
-    {
-        "crm_id": "CRM002",
-        "owner": "Bob",
-        "upload_date": datetime(2024, 10, 23),
-        "status": "Completed",
-        "error": None,
-    },
-    {
-        "crm_id": "CRM003",
-        "owner": "Charlie",
-        "upload_date": datetime(2024, 10, 24),
-        "status": "Failed",
-        "error": "File too large",
-    },
-    {
-        "crm_id": "CRM003",
-        "owner": "Charlie",
-        "upload_date": datetime(2024, 10, 25),
-        "status": "Completed",
-        "error": None,
-    },
-    {
-        "crm_id": "CRM001",
-        "owner": "Alice",
-        "upload_date": datetime(2024, 10, 26),
-        "status": "In Progress",
-        "error": None,
-    },
-    {
-        "crm_id": "CRM004",
-        "owner": "David",
-        "upload_date": datetime(2024, 10, 27),
-        "status": "Completed",
-        "error": None,
-    },
-    {
-        "crm_id": "CRM005",
-        "owner": "Eve",
-        "upload_date": datetime(2024, 10, 28),
-        "status": "Failed",
-        "error": "Unauthorized access",
-    },
-    {
-        "crm_id": "CRM005",
-        "owner": "Eve",
-        "upload_date": datetime(2024, 10, 29),
-        "status": "Completed",
-        "error": None,
-    },
-]
 
 
 # @app.get("/", response_class=HTMLResponse)
@@ -222,11 +159,13 @@ async def get_upload_by_crm_id(crm_id: str, db: Session = Depends(get_db)):
 
 @app.get("/", response_class=HTMLResponse)
 async def protected_route(request: Request, user_token: str = Cookie(None), message: str = None,
-                          db: Session = Depends(get_db), page: int = Query(1, ge=1), limit: int = Query(5, ge=1)):
+                          db: Session = Depends(get_db), page: int = Query(1, ge=1), limit: int = Query(5, ge=1),
+                          sort: str = Query('desc')
+                          ):
     print(f'this is user token {user_token}')
     if user_token is None:
         return RedirectResponse(url="/login")  # Redirect if not authenticated
-    uploads_records_data, total_pages = await get_all_upload_records_from_db(db, limit, page)
+    uploads_records_data, total_pages = await get_all_upload_records_from_db(db, limit, page, sort=sort)
     print(f"This is page data {page} and {total_pages}")
     return templates.TemplateResponse("upload_home.html",
                                       {"request": request, "uploads": uploads_records_data,
@@ -235,7 +174,7 @@ async def protected_route(request: Request, user_token: str = Cookie(None), mess
                                        "total_pages": total_pages})
 
 
-async def get_all_upload_records_from_db(db, limit=5, page=1):
+async def get_all_upload_records_from_db(db, limit=5, page=1, sort='desc'):
     total_records = db.query(FileUpload.crm_id).distinct().count()
     total_pages = math.ceil(total_records / limit)  # Calculate total pages
     # Fetch records for the current page
@@ -258,18 +197,22 @@ async def get_all_upload_records_from_db(db, limit=5, page=1):
             (FileUpload.upload_date == latest_uploads_subquery.c.latest_upload_date)
         )
     )
-    upload_records = upload_records.order_by(FileUpload.upload_date.desc()).offset((page - 1) * limit).limit(
-        limit).all()
+    if sort.lower() == 'desc':
+        upload_records = upload_records.order_by(FileUpload.upload_date.desc()).offset((page - 1) * limit).limit(
+            limit).all()
+    else:
+        upload_records = upload_records.order_by(FileUpload.upload_date.asc()).offset((page - 1) * limit).limit(
+            limit).all()
 
     return upload_records, total_pages
 
 
-
-
-
 @app.post("/upload/", response_class=HTMLResponse)
-async def upload_file(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), user_token: str= Cookie(None)):
+async def upload_file(request: Request, file: UploadFile = File(...),
+                      db: Session = Depends(get_db),
+                      user_token: str = Cookie(None)):
     # Check the file content type to ensure it's an .xlsx file
+    file_data = await file.read()
     if file.content_type != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
         records, total_pages = await get_all_upload_records_from_db(db)
         error_message = "Only .xlsx files are allowed."
@@ -280,15 +223,118 @@ async def upload_file(request: Request, file: UploadFile = File(...), db: Sessio
             "page": 1,
             "total_pages": total_pages
         })
+    #checking file format
+    excel_file = io.BytesIO(file_data)
+    df = pd.read_excel(excel_file, header=1)
+    missing_columns = [col for col in rialto_table_necessary_columns if
+                       col.strip() not in [df_col.strip() for df_col in df.columns]]
+    if missing_columns:
+        records, total_pages = await get_all_upload_records_from_db(db)
+        error_message = f"Columns that are missing in Input file:  {missing_columns}"
+        print(f"Here are the columns that are missing {missing_columns}")
+        return templates.TemplateResponse("upload_home.html", {
+            "request": request,
+            "uploads": records,
+            "error": error_message,
+            "page": 1,
+            "total_pages": total_pages
+        })
+    print("past the missing columns")
+
+    base_name, ext = os.path.splitext(os.path.basename(file.filename))
+
+    # Ensure the file has the .xlsx extension
+    if ext.lower() != '.xlsx':
+        raise ValueError("The file must have an .xlsx extension.")
+
+    timestamp = datetime.now(timezone.utc)
+    est_timezone = pytz.timezone('America/New_York')
+    timestamp_est = timestamp.astimezone(est_timezone)
+    formatted_time = timestamp_est.strftime('%Y-%m-%d_%H-%M-%S')
+    new_file_name = f"{base_name}_{formatted_time}{ext}"
+    file_path = f"{DIRECTORY_NAME}/{new_file_name}"
     user_info = jwt.decode(user_token, options={"verify_signature": False})
+
     new_upload = FileUpload(
         crm_id=file.filename,  # or generate a unique ID
         owner=user_info['name'],
-        status='Completed',
+        status='In-Progress',
         error=None,
+        input_file_link=file_path,
+        upload_date=timestamp_est
     )
 
     db.add(new_upload)
     db.commit()
+    try:
+        upload_to_azure(file_path, file_data)
+        await process_action(file_path, file_data, new_upload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return RedirectResponse(url="/?message=File uploaded successfully", status_code=303)
+
+
+@app.get("/download_input_file/uploads/{filename}", name="download_input_file")
+async def download_file(filename: str):
+    decoded_file_name = unquote(filename)
+
+    try:
+        file_data = download_from_azure(f'uploads/{decoded_file_name}')
+        file_data_stream = io.BytesIO(file_data)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return StreamingResponse(file_data_stream, media_type="application/octet-stream")
+
+
+@app.get("/download_output_file/outputs/{filename}")
+async def download_file_output(filename: str):
+    decoded_file_name = unquote(filename)
+    print("code is in the outputs")
+    try:
+        file_data = download_from_azure(f'outputs/{decoded_file_name}')
+        file_data_stream = io.BytesIO(file_data)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return StreamingResponse(file_data_stream, media_type="application/octet-stream")
+
+
+@app.get("/download_failed_file/errors/{filename}")
+async def download_file_output(filename: str):
+    decoded_file_name = unquote(filename)
+    print("code is in the outputs")
+    try:
+        file_data = download_from_azure(f'errors/{decoded_file_name}')
+        file_data_stream = io.BytesIO(file_data)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return StreamingResponse(file_data_stream, media_type="application/octet-stream")
+
+
+@app.post("/upload-configs/", response_class=HTMLResponse)
+async def upload_file(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db),
+                      user_token: str = Cookie(None)):
+    # Check the file content type to ensure it's an .xlsx file
+    file_data = await file.read()
+    if file.content_type != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        records, total_pages = await get_all_upload_records_from_db(db)
+        error_message = "Only .xlsx files are allowed."
+        return templates.TemplateResponse("upload_home.html", {
+            "request": request,
+            "uploads": records,
+            "error": error_message,
+            "page": 1,
+            "total_pages": total_pages
+        })
+    file_path = f"configs/{file.filename}"
+    user_info = jwt.decode(user_token, options={"verify_signature": False})
+
+    try:
+        upload_to_azure(file_path, file_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     return RedirectResponse(url="/?message=File uploaded successfully", status_code=303)
