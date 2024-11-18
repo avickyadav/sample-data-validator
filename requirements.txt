@@ -13,3 +13,4 @@ sqlalchemy
 urllib3
 pytz
 pandas
+numpy
