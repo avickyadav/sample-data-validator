@@ -217,7 +217,7 @@
                         {% elif upload.status == "Failed"%}
                         <a href="/download_failed_file/{{ upload.error }}" class="download-link" title="View Error">
                             {{ upload.status }}
-                        {% elif upload.status == "Inprogress"%}
+                        {% elif upload.status == "In-Progress"%}
                             {{ upload.status }}
                         {% endif %}
                     <td>
