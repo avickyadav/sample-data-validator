@@ -12,9 +12,11 @@ class FileUpload(Base):
     id = Column(Integer, primary_key=True, index=True)
     crm_id = Column(String(255))
     owner = Column(String(100), nullable=False)
-    upload_date = Column(DateTime, default=datetime.now(timezone.utc))
+    upload_date = Column(DateTime)
     status = Column(String(50), nullable=False)
     error = Column(String, nullable=True)
+    input_file_link = Column(String, nullable=True)  # New column
+    output_file_link = Column(String, nullable=True)
 
 
 Base.metadata.create_all(bind=engine)
