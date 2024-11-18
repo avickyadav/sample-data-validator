@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.engine import URL
 
 server = 'testdbmb.database.windows.net'
@@ -13,25 +13,20 @@ connection_string = f"DRIVER={driver};SERVER={server};DATABASE={database};UID={u
 connection_url = URL.create("mssql+pyodbc", query={"odbc_connect": connection_string})
 print(f'This is url connection {connection_url}')
 engine = create_engine(connection_url)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 Base = declarative_base()
+
+db_session = scoped_session(SessionLocal)
 
 
 def get_db():
-    db = SessionLocal()
+    db = db_session()
     try:
         yield db
     finally:
-        db.close()
+        db_session.remove()
 
 
-
-
-class Persons(Base):
-    __tablename__ = 'Persons'
-    ID = Column(Integer, primary_key=True, index=True)
-    FirstName = Column(String)
-    LastName = Column(String)
 
 
 def retrieve_records():
