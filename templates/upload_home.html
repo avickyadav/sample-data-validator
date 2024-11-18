@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Upload Home</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link rel="stylesheet" href="/static/styles.css">
     <style>
         /* Modal styles */
@@ -133,6 +134,34 @@
             background-color: #4CAF50;
             color: white;
         }
+        .download-link button {
+    padding: 6px 12px;
+    background-color: #007bff;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.download-link button:hover {
+    background-color: #0056b3;
+}
+        .sort-icon {
+    cursor: pointer;
+    margin-left: 5px;
+    color: #333;
+}
+
+.sort-icon:hover {
+    color: #000;
+}
+.upload-date-column {
+        text-decoration: none;
+        color: unset;
+        display: flex;
+        justify-content: space-between;
+        }
+
 
     </style>
 </head>
@@ -166,8 +195,12 @@
                 <tr>
                     <th>CRM ID</th>
                     <th>Upload Owner</th>
-                    <th>Upload Date</th>
+                    <th ><a href="#" onclick="sortTable('upload_date')" class="upload-date-column">Upload Date
+                        <i id="sortIcon" class="fas fa-sort"></i>
+                    </a></th>
+
                     <th>Status</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -176,7 +209,22 @@
                     <td><a href="#" class="crm-link" data-crm-id="{{ upload.crm_id }}">{{ upload.crm_id }}</a></td>
                     <td>{{ upload.owner }}</td>
                     <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                    <td>{{ upload.status }}</td>
+                    <td>
+                        {% if upload.status == "Completed" %}
+                        <a href="/download_output_file/{{ upload.output_file_link }}" class="download-link" title="View Status">
+                            {{ upload.status }}
+                        </a></td>
+                        {% elif upload.status == "Failed"%}
+                        <a href="/download_failed_file/{{ upload.error }}" class="download-link" title="View Error">
+                            {{ upload.status }}
+                        {% elif upload.status == "Inprogress"%}
+                            {{ upload.status }}
+                        {% endif %}
+                    <td>
+                        <a href="/download_input_file/{{ upload.input_file_link }}" class="download-link" title="Download Input File">
+                            <button type="button">Download</button>
+                        </a>
+            </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -200,10 +248,18 @@
             {% elif message %}
                 <p class="success">{{ message }}</p>
             {% endif %}
-            <form action="/upload-configs/" method="post" enctype="multipart/form-data" class="upload-form">
+            <form action="/upload-configs/" method="post" enctype="multipart/form-data" class="upload-config-form">
                 <input type="file" name="file" required>
                 <button type="submit" class="upload-button">Upload</button>
             </form>
+            <p>Allowed filenames for upload are one of the following:</p>
+
+                <ul>
+                    <li>Bill_To_End_User.xlsx</li>
+                    <li>NetsuiteMigration_CRM.xlsx</li>
+                    <li>accounts.xlsx</li>
+                    <li>CDS_GoldenList.xlsx</li>
+                </ul>
         </div>
 
             </div>
@@ -220,7 +276,11 @@
             <table id="history-table">
                 <thead>
                     <tr>
-                        <th>Upload Date</th>
+                        <th>Upload Date
+                            <span class="sort-icon" onclick="sortTableByDate()">
+                                &#9650; <!-- Unicode for an up arrow icon -->
+                            </span>
+                        </th>
                         <th>Status</th>
                         <th>Owner</th>
                         <th>Error Message</th>
@@ -259,10 +319,27 @@
 
                 history.forEach(upload => {
                     const row = tbody.insertRow();
-                    row.insertCell(0).innerText = new Date(upload.upload_date).toLocaleDateString();
+                    row.insertCell(0).innerText = new Date(upload.upload_date).toLocaleString();
                     row.insertCell(1).innerText = upload.status;
                     row.insertCell(2).innerText = upload.owner;
-                    row.insertCell(3).innerText = upload.error ? upload.error : "None";
+                    var cell = row.insertCell(3);
+
+                    if (upload.error) {
+                        var link = document.createElement('a');
+                        link.href = "/download_failed_file/" + encodeURIComponent(upload.error);
+                        link.className = "download-link";
+                        link.title = "Download Error File";
+
+                        var button = document.createElement('button');
+                        button.type = "button";
+                        button.innerText = "Download";
+
+                        link.appendChild(button);
+
+                        cell.appendChild(link);
+                    } else {
+                        cell.innerText = "None";
+                    }
                 });
 
                 modal.style.display = "block";
@@ -301,14 +378,59 @@
         }
         const urlParams = new URLSearchParams(window.location.search);
             const page = urlParams.get('page'); // Get the `page` query parameter
+            const sort = urlParams.get('sort');
+            const path = window.location.pathname;
 
-            if (page) {
+
+            if (page || sort) {
                 // If there's a page parameter in the URL, activate the 'history' tab
                 openTab('history');
             } else {
                 // If there's no page parameter, activate the 'upload' tab by default
-                openTab('upload');
+                if (path.includes('upload-configs')) {
+                openTab('upload-config');
             }
+                else { openTab('upload'); }
+            }
+        function sortTable(column) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentSort = urlParams.get('sort') || 'asc';
+
+    // Toggle sort order
+    const newSortOrder = currentSort === 'asc' ? 'desc' : 'asc';
+
+    // Set the sort parameters
+    urlParams.set('sort_by', column);
+    urlParams.set('sort', newSortOrder);
+
+    // Redirect with updated sorting and existing pagination parameters
+    window.location.search = urlParams.toString();
+}
+        let sortAscending = true;
+
+function sortTableByDate() {
+    const table = document.getElementById("history-table");
+    const tbody = table.getElementsByTagName("tbody")[0];
+    const rows = Array.from(tbody.getElementsByTagName("tr"));
+
+    rows.sort((a, b) => {
+        const dateA = new Date(a.cells[0].textContent);
+        const dateB = new Date(b.cells[0].textContent);
+
+        return sortAscending ? dateA - dateB : dateB - dateA;
+    });
+
+    // Toggle sort direction for next click
+    sortAscending = !sortAscending;
+    tbody.innerHTML = ""; // Clear table body
+
+    rows.forEach(row => tbody.appendChild(row)); // Append sorted rows
+
+    // Change icon based on sort order
+    document.querySelector('.sort-icon').textContent = sortAscending ? '▲' : '▼';
+}
+
+
     </script>
 </body>
 </html>
