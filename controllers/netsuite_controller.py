@@ -1,18 +1,17 @@
 import threading
 from io import BytesIO
 import io
-from fastapi import FastAPI, BackgroundTasks
 import pandas as pd
 import os
 import numpy as np
 
 from constants.crm_table_constants import crm_table_with_optional_values
-from constants.rialto_table_constants import rialto_table_necessary_columns, rialto_table_fields_with_optional_values
+from constants.rialto_table_constants import rialto_table_fields_with_optional_values
 from constants.ship_method import cds_entity_to_subsidiary, subsidiary_to_ship_method
 from database import get_db
 from helper_file import download_from_azure, OUTPUT_DIRECTORY_NAME, ERROR_DIRECTORY_NAME, update_fields_db, \
     CONFIG_DIRECTORY_NAME
-from model.contract import Contract
+from model.contract import Contract, contract_model_columns
 
 from services.mail_service import mail_file
 from helper_file import upload_to_azure
@@ -26,27 +25,29 @@ def check_account_exist(field_name, customer_id, account_file_df):
             raise KeyError(f"Customer could not be found in the Account file.  {field_name}")
     except KeyError as e:
         print(f"Missing key '{e}' in the input row.")
-        raise Exception(f"Missing key '{e}' in the input row.")
+        raise ValueError(f"Missing key '{e}' in the input row.")
 
 
-def get_data_bill_to_end_user_field(field_name, cnt_number, df, account_file_df):
+def get_data_bill_to_end_user_field(field_name, cnt_number, df, account_file_df, errors):
+    bill_to_end_user_field = None
     try:
         matching_rows = df[df['CNT Number'] == cnt_number]
         if len(matching_rows) == 0:
-            raise KeyError("CNT Number not found in the Bill_to_end_user file")
+            raise KeyError(f"CNT Number not found in the Bill_to_end_user file for column {field_name}")
         bill_to_end_user_fields = matching_rows[f'{field_name}'].tolist()
         bill_to_end_user_field = bill_to_end_user_fields[0]
         if bill_to_end_user_field is None or (
                 isinstance(bill_to_end_user_field, str) and bill_to_end_user_field.strip() == "") or pd.isna(
-            bill_to_end_user_field):
+                bill_to_end_user_field):
             raise KeyError(
                 f"The field '{field_name}' is empty in the in table bill_to_end_user for cnt number : {cnt_number} .")
         if field_name in ['Bill To Addressee External ID', 'End User External ID']:
             check_account_exist(field_name, bill_to_end_user_field, account_file_df)
-        return bill_to_end_user_field
+        return bill_to_end_user_field, errors
     except KeyError as e:
         print(f"Missing key '{e}' in the input row.")
-        raise Exception(f"Missing key '{e}' in the input row.")
+        errors.append(f"Missing key '{e}' in the input row.")
+        return bill_to_end_user_field, errors
 
 
 def get_crm_data_field(field_name, cnt_number, df):
@@ -66,10 +67,10 @@ def get_crm_data_field(field_name, cnt_number, df):
         return crm_response_field
     except KeyError as e:
         print(f"Missing key '{e}' in the input row.")
-        raise Exception(f"Missing key '{e}' in the input row.")
+        raise ValueError(f"Missing key '{e}' in the input row.")
 
 
-def get_contract_months(coverage_start_date, coverage_end_date):
+def get_contract_months(coverage_start_date, coverage_end_date, errors):
     try:
         months_difference = (coverage_end_date.year - coverage_start_date.year) * 12 + (
                 coverage_end_date.month - coverage_start_date.month)
@@ -79,63 +80,67 @@ def get_contract_months(coverage_start_date, coverage_end_date):
 
     except Exception as e:
         print(f"An error occurred while calculating contract months: {e}")
-        raise Exception(f"Missing key or exception'{e}' in the input row.")
+        errors.append(f"Missing key or exception'{e}' in the input row.")
+        return 0, errors
 
-    return months_difference
+    return months_difference, errors
 
 
-def get_contract_rate(extended_price, coverage_start_date, coverage_end_date, billing_frequency):
+def get_contract_rate(extended_price, coverage_start_date, coverage_end_date, billing_frequency, errors):
     try:
         if extended_price == "":
             extended_price = 0
         print(f"extended price: {extended_price},,,coverage_start and end {coverage_end_date}, {coverage_start_date}")
         match billing_frequency[0]:
             case "Quarterly":
-                return 3 * extended_price
+                return 3 * extended_price, errors
             case "Annually":
-                return 12 * extended_price
+                return 12 * extended_price, errors
             case "Paid-In-Full":
                 months_difference = (coverage_end_date.year - coverage_start_date.year) * 12 + (
                         coverage_end_date.month - coverage_start_date.month)
                 if (coverage_end_date - (coverage_start_date + pd.DateOffset(months=months_difference))).days >= 27:
                     months_difference += 1
-                return months_difference * extended_price
+                return months_difference * extended_price, errors
             case _:
-                return extended_price
+                return extended_price, errors
     except Exception as e:
-        raise Exception(f"Missing key or exception '{e}' in the input row.")
+        errors.append(f"Missing key or exception '{e}' in the input row.")
+        return 0, errors
 
 
-def get_item_line_sales_price(extended_price, billing_frequency):
+def get_item_line_sales_price(extended_price, billing_frequency, errors):
     try:
         if extended_price == "":
             extended_price = 0
         match billing_frequency:
             case "Quarterly":
-                return 3 * extended_price
+                return 3 * extended_price, errors
             case "Annually" | "Paid-In-Full":
-                return 12 * extended_price
+                return 12 * extended_price, errors
             case _:
-                return extended_price
+                return extended_price, errors
 
     except Exception as e:
-        raise Exception(f"Missing key or exception '{e}' in the input row.")
+        errors.append(f"Errors found while extended price {e}")
+        return 0, errors
 
 
-def get_ship_postalcode(country, postal_code):
+def get_ship_postalcode(country, postal_code, errors):
     try:
         if country == 'United States':
 
             if len(postal_code) < 5:
                 postal_code = postal_code.zfill(5)
 
-            return postal_code
+            return postal_code, errors
 
-        return str(postal_code)
+        return str(postal_code), errors
 
     except KeyError as e:
         print(f"Error: Missing key {e} in the input row.")
-        raise Exception(f"Missing key {e} in the input row.")
+        errors.append(f"Missing key {e} in the input row.")
+        return "", errors
 
 
 def get_subsidiary(cds_entity):
@@ -159,7 +164,7 @@ def get_ship_method(cds_entity):
         return str(ship_method)
     except KeyError as e:
         print(f"Missing key '{e}' in the input row.")
-        raise Exception(f"Missing key '{e}' in the input row.")
+        raise ValueError(f"Missing key '{e}' in the input row.")
 
 
 def get_rialto_field(row, field_name):
@@ -175,31 +180,31 @@ def get_rialto_field(row, field_name):
 
     except KeyError as e:
         print(f"Missing key '{e}' in the input row.")
-        raise Exception(f"Missing key '{e}' in the input row.")
+        raise ValueError(f"Missing key '{e}' in the input row.")
 
 
-def check_data_from_golden_list(golden_list_df, device_type, manufacturer, item_model, coverage_sla, support_level):
-    # Check if the DataFrame is empty
+def check_data_from_golden_list(golden_list_df, device_type, manufacturer, item_model, errors):
     if golden_list_df.empty:
         raise ValueError("The golden list DataFrame is empty.")
 
-    # Create a condition for the manufacturer
-    manufacturer_condition = np.where(manufacturer.lower() == 'hp', 'hpe', manufacturer.lower())
+    manufacturer_condition = 'hpe' if manufacturer.lower() == 'hp' else manufacturer.lower()
 
-    # Filter the DataFrame
     filtered_df = golden_list_df[
-        (golden_list_df['Device Type'].str.lower() == device_type.lower()) &
-        (golden_list_df['Manufacturer'].str.lower() == manufacturer_condition) &
-        (golden_list_df['Model'].str.lower() == item_model.lower())
+        (golden_list_df['Device Type'].str.strip().str.lower() == device_type.strip().lower()) &
+        (golden_list_df['Manufacturer'].str.strip().str.lower() == manufacturer_condition) &
+        (golden_list_df['Model'].str.strip().str.lower() == item_model.strip().lower())
         ]
 
     if not filtered_df.empty:
-        return True
+        return errors
     else:
-        raise ValueError("No matching record found in the golden list.")
+        errors.append(
+            f"No matching record found in the golden list for Device Type: {device_type}, Manufacturer: {manufacturer} and Model :{item_model}")
+        return errors
 
 
 def process_row(row, bill_to_end_user_df, netsuite_crm_df, account_df, golden_list_df):
+    errors = []
     try:
         print("code is in process row")
         cnt_number = get_rialto_field(row, 'CNT Number')
@@ -222,27 +227,30 @@ def process_row(row, bill_to_end_user_df, netsuite_crm_df, account_df, golden_li
         net_terms = get_crm_data_field('Net Terms', cnt_number, netsuite_crm_df)
         currency = get_crm_data_field('Currency', cnt_number, netsuite_crm_df)
 
-        customer_acc_contract_id = get_data_bill_to_end_user_field('Bill To Addressee External ID', cnt_number,
-                                                                   bill_to_end_user_df, account_df)
-        end_user_external_id = get_data_bill_to_end_user_field('End User External ID', cnt_number, bill_to_end_user_df,
-                                                               account_df)
+        customer_acc_contract_id, errors = get_data_bill_to_end_user_field('Bill To Addressee External ID', cnt_number,
+                                                                           bill_to_end_user_df, account_df, errors)
+        end_user_external_id, errors = get_data_bill_to_end_user_field('End User External ID', cnt_number,
+                                                                       bill_to_end_user_df,
+                                                                       account_df, errors)
 
         coverage_start_date = pd.to_datetime(coverage_start_date_value) if coverage_start_date_value else pd.Timestamp(
             '1900-01-01')
         coverage_end_date = pd.to_datetime(coverage_end_date_value) if coverage_end_date_value else pd.Timestamp(
             '1900-01-01')
 
-        sales_price = get_item_line_sales_price(extended_price, billing_frequency)
-        contract_rate = get_contract_rate(extended_price, coverage_start_date, coverage_end_date, billing_frequency)
-        contract_months = get_contract_months(coverage_start_date, coverage_end_date)
-        postal_code = get_ship_postalcode(country, postal_code)
+        sales_price, errors = get_item_line_sales_price(extended_price, billing_frequency, errors)
+        contract_rate, errors = get_contract_rate(extended_price, coverage_start_date, coverage_end_date,
+                                                  billing_frequency, errors)
+        contract_months, errors = get_contract_months(coverage_start_date, coverage_end_date, errors)
+        postal_code, errors = get_ship_postalcode(country, postal_code, errors)
         mm_dd_yyyy_format = '%m/%d/%Y'
 
-        # check_data_from_golden_list(golden_list_df, device_type, manufacturer, item_model, coverage_sla,
-        #                             support_level)  #checking data from golden list
+        errors = check_data_from_golden_list(golden_list_df, device_type, manufacturer, item_model, errors)
+        # errors = check_data_from_golden_list(golden_list_df, device_type, manufacturer, item_model, coverage_sla,
+        #                                      support_level, errors)  #checking data from golden list
 
         contract_row = Contract(
-            external_id=cnt_number,
+            externalid=cnt_number,
             Customer=customer_acc_contract_id,
             subsidiary=cds_entity,
             orderstatus="Pending Approval",
@@ -300,16 +308,18 @@ def process_row(row, bill_to_end_user_df, netsuite_crm_df, account_df, golden_li
             currency=currency
         )
         print(f"code in process row {contract_row}")
+        if len(errors) != 0:
+            raise ValueError(f"Here the error {errors}")
         return contract_row
     except Exception as e:
         error_message = f"Error processing row : {e}"
         print(error_message)
-        raise Exception(error_message)
+        raise ValueError(error_message)
 
 
 def get_data_for_df(correct_data):
     data = [{
-        'external_id': contract.external_id,
+        'externalid': contract.externalid,
         'Customer': contract.Customer,
         'subsidiary': contract.subsidiary,
         'orderstatus': contract.orderstatus,
@@ -396,7 +406,7 @@ def handle_incorrect_data(incorrect_data, file_name, new_upload):
 
 def get_aggregation(correct_data_df):
     agg_df = correct_data_df.groupby(
-        ['external_id', 'Customer', 'itemLine_salesPrice', 'custcol_rr_contractbillingfreq',
+        ['externalid', 'Customer', 'itemLine_salesPrice', 'custcol_rr_contractbillingfreq',
          'custcol_rr_enduser', 'custcol_rr_enddate', 'custcol_rr_startdate',
          'cseg_device_type', 'cseg_manufacturer', 'cseg_360_item_model',
          'cseg_service_offr', 'cseg_support_type', 'custcol_360_part_subcontractor',
@@ -404,7 +414,41 @@ def get_aggregation(correct_data_df):
          'billCity', 'billState', 'billZip']
     ).agg(
         custcol_rr_assetnumber=('custcol_rr_assetnumber', lambda x: '\n'.join(x)),
-        itemLine_quantity=('itemLine_quantity', 'sum')
+        itemLine_quantity=('itemLine_quantity', 'sum'),
+        subsidiary=('subsidiary', 'first'),
+        orderstatus=('orderstatus', 'first'),
+        salesrep=('salesrep', 'first'),
+        otherrefnum=('otherrefnum', 'first'),
+        custbody_rr_startnewcontract=('custbody_rr_startnewcontract', 'first'),
+        custbody_rr_contract=('custbody_rr_contract', 'first'),
+        memo=('memo', 'first'),
+        ismultishipto=('ismultishipto', 'first'),
+        custbody_360_cus_refnum=('custbody_360_cus_refnum', 'first'),
+        itemLine_item=('itemLine_item', 'first'),
+        custcol_rr_contractrate=('custcol_rr_contractrate', 'first'),
+        itemLine_pricelevel=('itemLine_pricelevel', 'first'),
+        itemLine_description=('itemLine_description', 'first'),
+        custcol_rr_contracttermmonths=('custcol_rr_contracttermmonths', 'first'),
+        itemLine_department=('itemLine_department', 'first'),
+        itemLine_class=('itemLine_class', 'first'),
+        itemLine_location=('itemLine_location', 'first'),
+        custcol_360_original_start_date=('custcol_360_original_start_date', 'first'),
+        custcol_rr_intitalbilling=('custcol_rr_intitalbilling', 'first'),
+        custcol_rr_contractlineforcoterming=('custcol_rr_contractlineforcoterming', 'first'),
+        cseg_service_tier=('cseg_service_tier', 'first'),
+        custcol_360_line_po=('custcol_360_line_po', 'first'),
+        shipcarrier=('shipcarrier', 'first'),
+        shipmethod=('shipmethod', 'first'),
+        shipCity=('shipCity', 'first'),
+        shipState=('shipState', 'first'),
+        shipZip=('shipZip', 'first'),
+        shipCountry=('shipCountry', 'first'),
+        terms=('terms', 'first'),
+        billAddressee=('billAddressee', 'first'),
+        billAddr1=('billAddr1', 'first'),
+        billAddr2=('billAddr2', 'first'),
+        billCountry=('billCountry', 'first'),
+        currency=('currency', 'first')
     ).reset_index()
     # Step 2: Handle splitting of rows if custcol_rr_assetnumber length >= 4000
     final_rows = []
@@ -448,8 +492,6 @@ def get_aggregation(correct_data_df):
     return final_df
 
 
-#aggregation code
-
 def remove_file_from_temp_folder(file_path):
     os.remove(file_path)
     print(f"File has been deleted {file_path}")
@@ -460,6 +502,7 @@ def handle_correct_data(correct_data, file_name, new_upload):
     correct_data_df = pd.DataFrame(data_for_df)
     correct_aggregated_filename = f"Correct_{file_name.split('.')[0]}.csv"
     corrected_aggregated_df = get_aggregation(correct_data_df)
+    corrected_aggregated_df = corrected_aggregated_df[contract_model_columns]
     correct_aggregated_data_filepath, correct_file_data = save_dataframe_as_csv(corrected_aggregated_df,
                                                                                 correct_aggregated_filename)
     mail_file(correct_aggregated_data_filepath, "passed")

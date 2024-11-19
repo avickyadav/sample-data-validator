@@ -4,7 +4,7 @@ from pydantic import BaseModel
 
 
 class Contract(BaseModel):
-    external_id: Optional[str] = None
+    externalid: Optional[str] = None
     Customer: Optional[str] = None
     subsidiary: Optional[str] = None
     orderstatus: Optional[str] = None
@@ -60,6 +60,23 @@ class Contract(BaseModel):
     billZip: Optional[str] = None
     billCountry: Optional[str] = None
     currency: Optional[str] = None
+
+
+contract_model_columns = [
+    "externalid", "Customer", "subsidiary", "orderstatus", "salesrep", "otherrefnum",
+    "custbody_rr_startnewcontract", "custbody_rr_contract", "memo", "ismultishipto",
+    "custbody_360_cus_refnum", "itemLine_item", "itemLine_quantity", "itemLine_salesPrice",
+    "custcol_rr_contractrate", "itemLine_pricelevel", "itemLine_description",
+    "custcol_rr_assetnumber", "custcol_rr_contracttermmonths", "custcol_rr_contractbillingfreq",
+    "custcol_rr_enduser", "itemLine_department", "itemLine_class", "itemLine_location",
+    "custcol_rr_startdate", "custcol_rr_enddate", "custcol_360_original_start_date",
+    "custcol_rr_intitalbilling", "custcol_rr_contractlineforcoterming", "cseg_device_type",
+    "cseg_manufacturer", "cseg_360_item_model", "cseg_service_offr", "cseg_support_type",
+    "cseg_service_tier", "custcol_360_part_subcontractor", "custcol_360_line_po",
+    "shipcarrier", "shipmethod", "shipaddressee", "shipAddr1", "shipAddr2", "shipAddr3",
+    "shipCity", "shipState", "shipZip", "shipCountry", "terms", "billAddressee",
+    "billAddr1", "billAddr2", "billCity", "billState", "billZip", "billCountry", "currency"
+]
 
 
 
